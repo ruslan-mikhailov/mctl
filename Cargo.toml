@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2024"
 description = "Interactive Memcached text-protocol shell"
 license = "GPL-3.0-only"
-autobins = false
 
 [dependencies]
 base64 = "0.22"
+clap = { version = "4.5", features = ["derive"] }
+ctrlc = "3.5"
 directories = "6"
 libc = "0.2"
 nu-ansi-term = "0.50"
