@@ -265,6 +265,16 @@ fn pick_target(recent: Option<&RecentStore>, force_tls: bool) -> Result<Option<E
     Endpoint::parse(&host, tls).map(Some)
 }
 
+fn flush_confirmed(editor: &mut Reedline, signal: Signal, address: &str) -> bool {
+    match signal {
+        Signal::Success(confirmation) if confirmation.trim() == address => true,
+        _ => {
+            editor.run_edit_commands(&[EditCommand::Clear]);
+            false
+        }
+    }
+}
+
 impl Session {
     fn connect(&mut self) {
         self.cancelled.store(false, Ordering::Release);
@@ -403,16 +413,12 @@ impl Session {
                         warning: Arc::new(Mutex::new(None)),
                     };
                     println!("Flush all keys on {}?", self.endpoint.address());
-                    match editor
+                    let confirmation = editor
                         .read_line(&prompt)
-                        .map_err(|error| error.to_string())?
-                    {
-                        Signal::Success(confirmation)
-                            if confirmation.trim() == self.endpoint.address() => {}
-                        _ => {
-                            println!("Cancelled; no request sent.");
-                            return Ok(true);
-                        }
+                        .map_err(|error| error.to_string())?;
+                    if !flush_confirmed(editor, confirmation, &self.endpoint.address()) {
+                        println!("Cancelled; no request sent.");
+                        return Ok(true);
                     }
                 } else {
                     println!(
@@ -885,6 +891,23 @@ mod tests {
         session.handle("get k", None).unwrap();
         assert_eq!(&*written.lock(), b"get k\r\n");
     }
+    #[test]
+    fn cancelled_flush_confirmation_discards_pending_input() {
+        let mut editor = terminal::editor(
+            false,
+            false,
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(None)),
+        );
+        editor.run_edit_commands(&[EditCommand::InsertString("delete important".into())]);
+        assert!(!flush_confirmed(
+            &mut editor,
+            Signal::HostCommand(terminal::INTERRUPT_COMMAND.into()),
+            "cache:11211",
+        ));
+        assert_eq!(editor.current_buffer_contents(), "");
+    }
+
     #[test]
     fn zero_is_not_a_recent_host_selection() {
         let dir = tempfile::tempdir().unwrap();

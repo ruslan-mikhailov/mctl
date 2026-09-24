@@ -770,7 +770,7 @@ fn parse_meta_flags(verb: &str, tokens: &[String]) -> Result<Vec<MetaFlag>, Stri
         let flag = match (verb, code) {
             (_, "b") => bare(argument, MetaFlag::BinaryKey, code)?,
             ("mg" | "ms" | "ma", "c") => bare(argument, MetaFlag::Cas, code)?,
-            (_, "C") => MetaFlag::CompareCas(decimal(argument, "CAS ID")?),
+            ("ms" | "md" | "ma", "C") => MetaFlag::CompareCas(decimal(argument, "CAS ID")?),
             ("mg", "f") => bare(argument, MetaFlag::ClientFlags, code)?,
             ("mg", "h") => bare(argument, MetaFlag::Hit, code)?,
             (_, "k") => bare(argument, MetaFlag::Key, code)?,
@@ -1140,13 +1140,21 @@ mod tests {
     }
 
     #[test]
+    fn meta_get_rejects_an_ineffective_cas_guard() {
+        assert!(parse("mg key C1 T30").is_err());
+        assert!(parse("ms key value C1").is_ok());
+        assert!(parse("md key C1").is_ok());
+        assert!(parse("ma key C1 D1").is_ok());
+    }
+
+    #[test]
     fn meta_flag_classification_and_constraints() {
         for form in ["me key", "me YQ== b", "mn"] {
             assert!(parsed(form).is_readonly(), "{form}");
         }
         for form in [
             "mg key f c t s v",
-            "mg YQ== b C1 Otag h l k u",
+            "mg YQ== b Otag h l k u",
             "inspect key",
             "inspect key --value",
             "mg key N30",
@@ -1165,6 +1173,7 @@ mod tests {
             assert!(!parsed(form).is_readonly(), "{form}");
         }
         for form in [
+            "mg key C1 T30",
             "mg key q",
             "mg key Q",
             "mg key T2592001",

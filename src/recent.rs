@@ -1,6 +1,8 @@
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File};
+use std::fs;
+#[cfg(unix)]
+use std::fs::File;
 use std::io::{self, Write};
 use std::net::Ipv6Addr;
 use std::path::PathBuf;
@@ -168,6 +170,7 @@ impl RecentStore {
         temp.flush()?;
         temp.as_file().sync_all()?;
         temp.persist(&self.path).map_err(|err| err.error)?;
+        #[cfg(unix)]
         File::open(parent)?.sync_all()?;
         Ok(())
     }

@@ -397,12 +397,8 @@ impl Completer for CommandCompleter {
             let keys = self.known_keys.lock();
             for key in keys.iter() {
                 if key.starts_with(prefix) && key != prefix {
-                    // Shell quoting protects a previously seen key with quote characters.
-                    let value = if key.bytes().any(|b| matches!(b, b'\'' | b'"' | b'\\')) {
-                        format!("\"{}\"", key.replace('\\', "\\\\").replace('"', "\\\""))
-                    } else {
-                        key.clone()
-                    };
+                    // The command parser treats an unquoted leading # as a comment.
+                    let value = shell_words::quote(key).into_owned();
                     suggestions.push(Suggestion {
                         value,
                         span,
@@ -738,6 +734,18 @@ mod tests {
             "--flags"
         );
         assert_eq!(completer.complete("get", 3).suggestions()[0].value, "get");
+    }
+
+    #[test]
+    fn completed_comment_prefixed_key_remains_a_key() {
+        let mut completer = CommandCompleter {
+            readonly: false,
+            known_keys: Arc::new(Mutex::new(vec!["#cache".into()])),
+        };
+        let result = completer.complete("get #c", 6);
+        let suggestion = &result.suggestions()[0];
+        let completed = format!("get {} ", suggestion.value);
+        assert_eq!(shell_words::split(&completed).unwrap(), ["get", "#cache"]);
     }
 
     #[test]
