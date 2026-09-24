@@ -12,6 +12,7 @@ directories = "6"
 libc = "0.2"
 nu-ansi-term = "0.50"
 parking_lot = "0.12"
+reedline = { version = "0.51", features = ["idle_callback"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 rustls-native-certs = "0.8"
 serde = { version = "1", features = ["derive"] }
