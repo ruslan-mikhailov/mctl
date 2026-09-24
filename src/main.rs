@@ -557,25 +557,148 @@ impl Session {
 
 fn help(verb: Option<&str>, readonly: bool) -> String {
     let suffix = if readonly {
-        "\n[ro] Only get, gets, version, safe stats, me, mn, help, history, recent, reconnect, quit, exit are allowed; mg/inspect can claim stale-item recache ownership."
+        "\n[ro] Allowed: get, gets, stats, version, me, mn, help, history, recent (list only), reconnect, quit, exit. mg/inspect can claim stale-item recache ownership; mutations and recent changes are blocked."
     } else {
         ""
     };
     let body = match verb {
         None => {
-            "get/gets KEY [KEY...]; set/add/replace KEY VALUE [--ttl SEC] [--flags N]; append/prepend KEY VALUE; cas KEY VALUE --cas ID; delete KEY; incr/decr KEY DELTA; touch KEY --ttl SEC; gat/gats SEC KEY [KEY...]; stats [items|slabs|settings|sizes]; version; flush_all [--delay SEC]; mg/ms/md/ma/me/mn; inspect KEY [--value]; help [command]; history; recent [forget HOST:PORT [--tls]|clear]; reconnect; quit/exit. VALUE may be quoted, --base64 TEXT, or --file PATH. TTL is relative, <=30 days."
+            "Commands (help COMMAND for details):
+  get KEY [KEY...]                     Retrieve values.
+  gets KEY [KEY...]                    Retrieve values with CAS IDs.
+  set KEY VALUE [TTL [FLAGS]]          Store a value.
+  add KEY VALUE [TTL [FLAGS]]          Store only if absent.
+  replace KEY VALUE [TTL [FLAGS]]      Store only if present.
+  append KEY VALUE                    Append to an existing value.
+  prepend KEY VALUE                   Prepend to an existing value.
+  cas KEY VALUE CAS_ID [TTL [FLAGS]]   Store if the CAS ID matches.
+  delete KEY                          Delete a key.
+  incr KEY DELTA                      Increase an unsigned counter.
+  decr KEY DELTA                      Decrease an unsigned counter.
+  touch KEY TTL                       Update expiration.
+  gat SEC KEY [KEY...]                Update expiration and retrieve values.
+  gats SEC KEY [KEY...]               As gat, with CAS IDs.
+  stats [items|slabs|settings|sizes]  Read server statistics; see help stats.
+  version                             Show server version.
+  flush_all [DELAY]                   Invalidate all keys; interactive confirmation required.
+  mg KEY [FLAGS...]                   Meta get.
+  ms KEY VALUE [FLAGS...]             Meta set.
+  md KEY [FLAGS...]                   Meta delete.
+  ma KEY [FLAGS...]                   Meta arithmetic.
+  me KEY [b]                          Meta debug.
+  mn                                  Meta no-op.
+  inspect KEY [value]                 Show item metadata (and optionally value).
+  help [COMMAND]                      Show command help.
+  history                             Show entered commands.
+  recent [forget HOST:PORT [tls]|clear]  List or change recent hosts.
+  reconnect                           Reconnect to the current host.
+  quit                                Leave the shell.
+  exit                                Leave the shell.
+VALUE may be inline (quote whitespace), --base64 TEXT, or --file PATH.
+TTL and DELAY are relative seconds (0..=30 days).
+Named --ttl, --flags, --cas, --delay, --value, and --tls forms remain available where applicable.
+get/gets only retrieve; they do not accept VALUE, TTL, or FLAGS."
         }
-        Some("mg") => {
-            "mg KEY [FLAGS...]: f/c/t/s/v request flags/CAS/TTL/size/value; h/l/k/u/b/Otoken inspect metadata; Nttl/Rthreshold/Tttl/Ecas mutate state; quiet q is unsupported."
+        Some("get") => {
+            "get KEY [KEY...]: retrieve one or more values. Retrieval only; no VALUE, TTL, or FLAGS."
         }
-        Some("md") => {
-            "md KEY [FLAGS...]: I marks stale; Tttl with I updates expiry; x removes only the value. Mutating operation."
+        Some("gets") => {
+            "gets KEY [KEY...]: retrieve one or more values with their CAS IDs. Retrieval only; no VALUE, TTL, or FLAGS."
         }
+        Some("set" | "add" | "replace") => {
+            let verb = verb.unwrap();
+            let effect = match verb {
+                "set" => "store the value",
+                "add" => "store only if the key does not exist",
+                _ => "store only if the key exists",
+            };
+            return format!(
+                "{verb} KEY VALUE [TTL [FLAGS]]\n\
+                 {verb} KEY --base64 ENCODED_VALUE [TTL [FLAGS]]\n\
+                 {verb} KEY --file PATH [TTL [FLAGS]]\n\
+                 {verb} KEY VALUE [--ttl SEC] [--flags N]\n\
+                 {verb} KEY --base64 ENCODED_VALUE [--ttl SEC] [--flags N]\n\
+                 {verb} KEY --file PATH [--ttl SEC] [--flags N]\n\
+                 {effect}. Inline VALUE can be quoted to preserve whitespace. \
+                 TTL is relative seconds (0..=30 days); FLAGS is an unsigned 32-bit integer. \
+                 Do not mix positional TTL/FLAGS with named options.{suffix}"
+            );
+        }
+        Some("append") => {
+            "append KEY VALUE: append to an existing value. VALUE may be inline, --base64 TEXT, or --file PATH. No TTL or FLAGS options."
+        }
+        Some("prepend") => {
+            "prepend KEY VALUE: prepend to an existing value. VALUE may be inline, --base64 TEXT, or --file PATH. No TTL or FLAGS options."
+        }
+        Some("cas") => {
+            "cas KEY VALUE CAS_ID [TTL [FLAGS]]\ncas KEY VALUE --cas ID [--ttl SEC] [--flags N]\nStore only when the CAS ID matches. VALUE may be inline, --base64 TEXT, or --file PATH. CAS_ID is an unsigned 64-bit integer; TTL is relative seconds (0..=30 days); FLAGS is an unsigned 32-bit integer. Do not mix positional numbers with named options."
+        }
+        Some("delete") => "delete KEY: delete a cached item.",
+        Some("incr") => {
+            "incr KEY DELTA: increase an unsigned decimal counter by an unsigned 64-bit DELTA."
+        }
+        Some("decr") => {
+            "decr KEY DELTA: decrease an unsigned decimal counter by an unsigned 64-bit DELTA."
+        }
+        Some("touch") => {
+            "touch KEY TTL\ntouch KEY --ttl SEC\nUpdate a key's expiration. TTL is relative seconds (0..=30 days)."
+        }
+        Some("gat") => {
+            "gat SEC KEY [KEY...]: update expiration and retrieve values. SEC is relative seconds (0..=30 days); this mutates expiration."
+        }
+        Some("gats") => {
+            "gats SEC KEY [KEY...]: update expiration and retrieve values with CAS IDs. SEC is relative seconds (0..=30 days); this mutates expiration."
+        }
+        Some("stats") => {
+            "stats [items|slabs|settings|sizes]: read general, item, slab, configuration, or size statistics. stats sizes can lock Memcached versions before 1.4.27 for minutes; see help stats sizes."
+        }
+        Some("stats items") => "stats items: show statistics grouped by slab class.",
+        Some("stats slabs") => "stats slabs: show slab allocation statistics.",
+        Some("stats settings") => "stats settings: show server configuration settings.",
         Some("stats sizes") => {
             "stats sizes: on Memcached versions before 1.4.27 this can lock the server for minutes; newer versions avoid that particular lock."
         }
+        Some("version") => "version: show the Memcached server version.",
+        Some("flush_all") => {
+            "flush_all [DELAY]\nflush_all [--delay SEC]\nInvalidate all cached items, immediately or after relative DELAY seconds (0..=30 days). Requires interactive confirmation by typing the host address; batch mode refuses it."
+        }
+        Some("mg") => {
+            "mg KEY [FLAGS...]: meta get. f/c/t/s/v request client flags/CAS/remaining TTL/size/value; h/l/k/u/b/O<TOKEN> request hit, last access, key, no LRU bump, binary key, or opaque token. N<TTL>/R<TTL>/T<TTL>/E<CAS> can mutate state; q is unsupported. Blocked in readonly mode."
+        }
+        Some("ms") => {
+            "ms KEY VALUE [FLAGS...]: meta set. VALUE may be inline, --base64 TEXT, or --file PATH. Supported flags include T<TTL>, F<N>, C<CAS>, E<CAS>, I (requires C<CAS>), M[E|R|A|P|S], N<TTL> (requires MA), b, c, k, O<TOKEN>, s. q is unsupported."
+        }
+        Some("md") => {
+            "md KEY [FLAGS...]: meta delete. I marks stale; T<TTL> with I updates expiration; x removes only the value. Also supports C<CAS>, E<CAS>, b, k, O<TOKEN>. Mutating operation; q is unsupported."
+        }
+        Some("ma") => {
+            "ma KEY [FLAGS...]: meta arithmetic. D<N> is the delta; M[I|+|D|-] selects arithmetic mode; N<TTL> can create an item (J<N> requires N). Also supports C<CAS>, E<CAS>, T<TTL>, b, c, k, O<TOKEN>, t, v. q is unsupported."
+        }
+        Some("me") => {
+            "me KEY [b]: inspect the server's meta debug information; b denotes a base64-encoded binary key."
+        }
+        Some("mn") => "mn: send a meta no-op to check server responsiveness.",
+        Some("inspect") => {
+            "inspect KEY [value]\ninspect KEY [--value]\nShow item flags, CAS, remaining TTL, size, hit, and last-access metadata. Add value/--value to include the value. Blocked in readonly mode because meta get can claim recache ownership."
+        }
+        Some("help") => {
+            "help [COMMAND]: show this overview or help for one command (for example, help set or help stats sizes)."
+        }
+        Some("history") => "history: list commands entered during this session.",
+        Some("recent") => {
+            "recent: list saved hosts.\nrecent forget HOST:PORT [tls]\nrecent forget HOST:PORT [--tls]\nForget saved entries for that address; tls/--tls restricts removal to TLS entries. recent clear removes all saved hosts. Changes are blocked in readonly mode."
+        }
+        Some("recent forget") => {
+            "recent forget HOST:PORT [tls]\nrecent forget HOST:PORT [--tls]\nForget saved hosts at this address; tls/--tls limits removal to TLS entries. Blocked in readonly mode."
+        }
+        Some("recent clear") => "recent clear: remove every saved host. Blocked in readonly mode.",
+        Some("reconnect") => "reconnect: reconnect to the current host.",
+        Some("quit") => "quit: leave the shell.",
+        Some("exit") => "exit: leave the shell.",
         Some(other) => {
-            return format!("{other}: use help for command syntax; unknown help topic{suffix}");
+            return format!(
+                "unknown help topic {other}; use help to list supported commands{suffix}"
+            );
         }
     };
     format!("{body}{suffix}")
@@ -605,6 +728,114 @@ mod tests {
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn help_overview_lists_every_command_on_its_own_line_with_a_topic() {
+        let overview = help(None, false);
+        for verb in [
+            "get",
+            "gets",
+            "set",
+            "add",
+            "replace",
+            "append",
+            "prepend",
+            "cas",
+            "delete",
+            "incr",
+            "decr",
+            "touch",
+            "gat",
+            "gats",
+            "stats",
+            "version",
+            "flush_all",
+            "mg",
+            "ms",
+            "md",
+            "ma",
+            "me",
+            "mn",
+            "inspect",
+            "help",
+            "history",
+            "recent",
+            "reconnect",
+            "quit",
+            "exit",
+        ] {
+            assert!(
+                overview
+                    .lines()
+                    .any(|line| line.trim_start().starts_with(&format!("{verb} "))),
+                "overview omits {verb}"
+            );
+            let topic = help(Some(verb), false);
+            assert!(
+                !topic.contains("unknown help topic"),
+                "missing topic for {verb}"
+            );
+            assert!(topic.starts_with(verb), "topic does not identify {verb}");
+        }
+        for topic in [
+            "stats items",
+            "stats slabs",
+            "stats settings",
+            "stats sizes",
+            "recent forget",
+            "recent clear",
+        ] {
+            assert!(
+                !help(Some(topic), false).contains("unknown help topic"),
+                "{topic}"
+            );
+        }
+        assert!(help(Some("not-a-command"), false).contains("unknown help topic"));
+    }
+
+    #[test]
+    fn help_explains_storage_forms_without_confusing_retrieval() {
+        let set = help(Some("set"), false);
+        for form in [
+            "set KEY VALUE [TTL [FLAGS]]",
+            "set KEY VALUE [--ttl SEC] [--flags N]",
+            "set KEY --base64 ENCODED_VALUE [TTL [FLAGS]]",
+            "set KEY --file PATH [TTL [FLAGS]]",
+            "set KEY --base64 ENCODED_VALUE [--ttl SEC] [--flags N]",
+            "set KEY --file PATH [--ttl SEC] [--flags N]",
+        ] {
+            assert!(set.contains(form), "set help omits {form}");
+        }
+        assert!(set.contains("Do not mix"));
+        assert!(help(Some("cas"), false).contains("cas KEY VALUE CAS_ID [TTL [FLAGS]]"));
+        assert!(help(Some("cas"), false).contains("--cas ID"));
+        assert!(help(Some("touch"), false).contains("touch KEY TTL"));
+        assert!(help(Some("flush_all"), false).contains("flush_all [DELAY]"));
+        assert!(help(Some("inspect"), false).contains("inspect KEY [value]"));
+        assert!(help(Some("recent forget"), false).contains("HOST:PORT [tls]"));
+        for verb in ["get", "gets"] {
+            let topic = help(Some(verb), false);
+            assert!(topic.contains("KEY [KEY...]"));
+            assert!(topic.contains("Retrieval only"));
+        }
+        for verb in ["append", "prepend"] {
+            assert!(help(Some(verb), false).contains("No TTL or FLAGS"));
+        }
+    }
+
+    #[test]
+    fn help_keeps_destructive_operation_warnings_and_readonly_limits() {
+        assert!(help(Some("stats"), false).contains("1.4.27"));
+        let sizes = help(Some("stats sizes"), false);
+        assert!(sizes.contains("before 1.4.27"));
+        assert!(sizes.contains("lock the server for minutes"));
+        let flush = help(Some("flush_all"), false);
+        assert!(flush.contains("interactive confirmation"));
+        assert!(flush.contains("batch mode refuses"));
+        let readonly = help(None, true);
+        assert!(readonly.contains("recent (list only)"));
+        assert!(readonly.contains("mg/inspect"));
     }
 
     #[test]
