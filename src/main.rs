@@ -599,7 +599,7 @@ fn help(verb: Option<&str>, readonly: bool) -> String {
   exit                                Leave the shell.
 VALUE may be inline (quote whitespace), --base64 TEXT, or --file PATH.
 TTL and DELAY are relative seconds (0..=30 days).
-Named --ttl, --flags, --cas, --delay, --value, and --tls forms remain available where applicable.
+Named --ttl, --flags, --cas, and --delay accept either --name VALUE or --name=VALUE; --base64 and --file do too. --value and --tls are switches.
 get/gets only retrieve; they do not accept VALUE, TTL, or FLAGS."
         }
         Some("get") => {
@@ -624,7 +624,7 @@ get/gets only retrieve; they do not accept VALUE, TTL, or FLAGS."
                  {verb} KEY --file PATH [--ttl SEC] [--flags N]\n\
                  {effect}. Inline VALUE can be quoted to preserve whitespace. \
                  TTL is relative seconds (0..=30 days); FLAGS is an unsigned 32-bit integer. \
-                 Do not mix positional TTL/FLAGS with named options.{suffix}"
+                 Do not mix positional TTL/FLAGS with named options. Valued options also accept --name=value (for example, --flags=123 and --file=PATH).{suffix}"
             );
         }
         Some("append") => {

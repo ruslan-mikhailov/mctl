@@ -337,13 +337,14 @@ pub fn parse_for_session(line: &str, readonly: bool) -> Result<Command, String> 
                     if !option.starts_with("--") {
                         return Err("cannot mix positional numbers with named options".into());
                     }
-                    if !seen.insert(option.as_str()) {
-                        return Err(format!("duplicate option {option}"));
+                    let name = option
+                        .split_once('=')
+                        .map_or(option.as_str(), |(name, _)| name);
+                    if !seen.insert(name) {
+                        return Err(format!("duplicate option {name}"));
                     }
-                    let (number, next) = tail
-                        .split_first()
-                        .ok_or_else(|| format!("{option} requires a number"))?;
-                    match option.as_str() {
+                    let (number, next) = option_value(option, tail, "requires a number")?;
+                    match name {
                         "--ttl"
                             if !matches!(
                                 operation,
@@ -363,7 +364,7 @@ pub fn parse_for_session(line: &str, readonly: bool) -> Result<Command, String> 
                         "--cas" if operation == StorageOperation::Cas => {
                             cas = Some(decimal::<u64>(number, "CAS ID")?)
                         }
-                        _ => return Err(format!("unsupported option {option} for {verb}")),
+                        _ => return Err(format!("unsupported option {name} for {verb}")),
                     }
                     rest = next;
                 }
@@ -433,6 +434,10 @@ pub fn parse_for_session(line: &str, readonly: bool) -> Result<Command, String> 
                     validate_key(key)?;
                     relative_ttl(ttl)?
                 }
+                [key, option] if option.starts_with("--ttl=") => {
+                    validate_key(key)?;
+                    relative_ttl(&option["--ttl=".len()..])?
+                }
                 _ => return Err("usage: touch KEY TTL | touch KEY --ttl SEC".into()),
             };
             basic(BasicCommand::Touch {
@@ -463,6 +468,9 @@ pub fn parse_for_session(line: &str, readonly: bool) -> Result<Command, String> 
                 [] => 0,
                 [delay] if !delay.starts_with("--") => relative_ttl(delay)?,
                 [option, delay] if option == "--delay" => relative_ttl(delay)?,
+                [option] if option.starts_with("--delay=") => {
+                    relative_ttl(&option["--delay=".len()..])?
+                }
                 _ => return Err("usage: flush_all [DELAY | --delay SEC]".into()),
             };
             basic(BasicCommand::FlushAll { delay })
@@ -621,6 +629,20 @@ fn validate_multi_key_line(prefix_bytes: usize, keys: &[String]) -> Result<(), S
     }
 }
 
+fn option_value<'a>(
+    option: &'a str,
+    rest: &'a [String],
+    missing: &str,
+) -> Result<(&'a str, &'a [String]), String> {
+    if let Some((_, value)) = option.split_once('=') {
+        return Ok((value, rest));
+    }
+    let (value, remaining) = rest
+        .split_first()
+        .ok_or_else(|| format!("{option} {missing}"))?;
+    Ok((value, remaining))
+}
+
 fn decimal<T: std::str::FromStr>(input: &str, name: &str) -> Result<T, String> {
     if input.is_empty() || !input.bytes().all(|b| b.is_ascii_digit()) {
         return Err(format!("{name} must be an unsigned decimal number"));
@@ -699,9 +721,12 @@ fn parse_value(args: &[String]) -> Result<(Vec<u8>, &[String]), String> {
     let (first, tail) = args
         .split_first()
         .ok_or("missing value (use VALUE, --base64 TEXT, or --file PATH)")?;
-    let (value, tail) = match first.as_str() {
+    let option = first
+        .split_once('=')
+        .map_or(first.as_str(), |(name, _)| name);
+    let (value, tail) = match option {
         "--base64" => {
-            let (text, rest) = tail.split_first().ok_or("--base64 requires encoded text")?;
+            let (text, rest) = option_value(first, tail, "requires encoded text")?;
             if text.len() > (MAX_VALUE_BYTES / 3 + 1) * 4 {
                 return Err("base64 value exceeds 16 MiB decoded limit".into());
             }
@@ -713,7 +738,7 @@ fn parse_value(args: &[String]) -> Result<(Vec<u8>, &[String]), String> {
             )
         }
         "--file" => {
-            let (path, rest) = tail.split_first().ok_or("--file requires a path")?;
+            let (path, rest) = option_value(first, tail, "requires a path")?;
             let file = open_regular_value(path)?;
             let mut value = Vec::new();
             file.take((MAX_VALUE_BYTES + 1) as u64)
@@ -959,6 +984,44 @@ mod tests {
             parsed("gets k v"),
             Command::Basic(BasicCommand::Get { keys, cas: true }) if keys == ["k", "v"]
         ));
+    }
+
+    #[test]
+    fn valued_options_accept_equals_without_changing_their_meaning() {
+        let set = parsed("set test3 tesst --flags=123");
+        assert!(matches!(
+            set,
+            Command::Basic(BasicCommand::Store { flags: 123, .. })
+        ));
+        assert_eq!(set, parsed("set test3 tesst --flags 123"));
+        assert_eq!(
+            parsed("cas k v --cas=42 --ttl=30 --flags=7"),
+            parsed("cas k v --cas 42 --ttl 30 --flags 7")
+        );
+        assert_eq!(parsed("touch k --ttl=30"), parsed("touch k --ttl 30"));
+        assert_eq!(
+            parsed("flush_all --delay=30"),
+            parsed("flush_all --delay 30")
+        );
+        assert_eq!(
+            parsed("set k --base64=dGVzdA== --flags=7"),
+            parsed("set k test --flags 7")
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("value");
+        std::fs::write(&path, b"test").unwrap();
+        assert_eq!(
+            parsed(&format!("set k --file={} --flags=7", path.display())),
+            parsed("set k test --flags 7")
+        );
+        invalid("set k v --flags=4294967296");
+        invalid("set k v --flags=7 --flags 8");
+        invalid("set k v --ttl=1 2");
+        assert!(
+            parse("set k v --flag=123")
+                .unwrap_err()
+                .contains("unsupported option --flag")
+        );
     }
 
     #[test]
