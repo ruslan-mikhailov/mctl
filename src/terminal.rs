@@ -63,6 +63,7 @@ const MG_SAFE_FLAGS: &[&str] = &["b", "c", "f", "h", "k", "l", "s", "t", "u", "v
 const MS_FLAGS: &[&str] = &["b", "c", "k", "s", "I", "ME", "MR", "MA", "MP", "MS"];
 const MD_FLAGS: &[&str] = &["b", "k", "I", "x"];
 const MA_FLAGS: &[&str] = &["b", "c", "k", "t", "v", "MI", "M+", "M-"];
+pub const INTERRUPT_COMMAND: &str = "mctl:interrupt";
 
 fn commands(readonly: bool) -> &'static [&'static str] {
     if readonly {
@@ -502,9 +503,13 @@ impl Prompt for ShellPrompt {
     }
 }
 
-/// Return true only for a second idle Ctrl-C before the three-second deadline.
-pub fn armed_exit(warning: &Arc<Mutex<Option<Instant>>>) -> bool {
+/// A nonempty line cancels the pending exit; only two empty-line Ctrl-C presses exit.
+pub fn armed_exit(warning: &Arc<Mutex<Option<Instant>>>, input: &str) -> bool {
     let mut deadline = warning.lock();
+    if !input.is_empty() {
+        *deadline = None;
+        return false;
+    }
     let now = Instant::now();
     if deadline.is_some_and(|until| now < until) {
         *deadline = None;
@@ -554,6 +559,11 @@ pub fn editor(
             ReedlineEvent::Menu("completion_menu".into()),
             ReedlineEvent::MenuPrevious,
         ]),
+    );
+    keys.add_binding(
+        KeyModifiers::CONTROL,
+        KeyCode::Char('c'),
+        ReedlineEvent::ExecuteHostCommand(INTERRUPT_COMMAND.into()),
     );
     let mut line = Reedline::create()
         .with_ansi_colors(color)
@@ -746,17 +756,29 @@ mod tests {
     }
 
     #[test]
+    fn typed_ctrl_c_cancels_without_arming_or_completing_idle_exit() {
+        let warning = Arc::new(Mutex::new(None));
+        assert!(!armed_exit(&warning, "set key value"));
+        assert!(warning.lock().is_none());
+        assert!(!armed_exit(&warning, ""));
+        assert!(!armed_exit(&warning, " "));
+        assert!(warning.lock().is_none());
+        assert!(!armed_exit(&warning, ""));
+        assert!(armed_exit(&warning, ""));
+    }
+
+    #[test]
     fn idle_ctrl_c_expires_and_clears_prompt() {
         let warning = Arc::new(Mutex::new(None));
         let prompt = ShellPrompt {
             label: "disconnected".into(),
             warning: warning.clone(),
         };
-        assert!(!armed_exit(&warning));
+        assert!(!armed_exit(&warning, ""));
         assert_eq!(prompt.render_prompt_right(), "Press Ctrl-C again to exit");
-        assert!(armed_exit(&warning));
+        assert!(armed_exit(&warning, ""));
         assert_eq!(prompt.render_prompt_right(), "");
-        assert!(!armed_exit(&warning));
+        assert!(!armed_exit(&warning, ""));
         let deadline = *warning.lock();
         assert!(!expire_warning(
             &warning,
@@ -764,7 +786,6 @@ mod tests {
         ));
         assert!(expire_warning(&warning, deadline.unwrap()));
         assert_eq!(prompt.render_prompt_right(), "");
-        assert!(!armed_exit(&warning));
         clear_warning(&warning);
         assert_eq!(prompt.render_prompt_right(), "");
     }

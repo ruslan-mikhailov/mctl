@@ -14,8 +14,8 @@ use mctl::terminal::{self, ShellPrompt};
 use mctl::wire::{Wire, WireResponse};
 use parking_lot::Mutex;
 use reedline::{
-    ColumnarMenu, DefaultCompleter, Emacs, KeyCode, KeyModifiers, MenuBuilder, Reedline,
-    ReedlineEvent, ReedlineMenu, Signal, default_emacs_keybindings,
+    ColumnarMenu, DefaultCompleter, EditCommand, Emacs, KeyCode, KeyModifiers, MenuBuilder,
+    Reedline, ReedlineEvent, ReedlineMenu, Signal, default_emacs_keybindings,
 };
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -330,9 +330,14 @@ impl Session {
                         break;
                     }
                 }
-                Signal::CtrlC => {
-                    if terminal::armed_exit(&self.warning) {
+                Signal::HostCommand(command) if command == terminal::INTERRUPT_COMMAND => {
+                    let input = editor.current_buffer_contents();
+                    if terminal::armed_exit(&self.warning, input) {
                         break;
+                    }
+                    if !input.is_empty() {
+                        editor.run_edit_commands(&[EditCommand::Clear]);
+                        println!();
                     }
                 }
                 Signal::CtrlD => break,
