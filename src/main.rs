@@ -374,7 +374,7 @@ impl Session {
         self.cancelled.store(false, Ordering::Release);
         let _running = RunningGuard::start(&self.running);
         self.history.push(line.to_owned());
-        let command = match command::parse(line) {
+        let command = match command::parse_for_session(line, self.readonly) {
             Ok(command) => command,
             Err(error) => {
                 println!("{}", render::error(&error, self.color));

@@ -235,24 +235,51 @@ impl Command {
         }
         Some(match self {
             Self::Basic(BasicCommand::Gat { .. } | BasicCommand::Touch { .. }) => {
-                "readonly: command changes expiration; no request sent"
+                READONLY_EXPIRATION
             }
-            Self::Basic(BasicCommand::FlushAll { .. }) => {
-                "readonly: flush_all invalidates cached items; no request sent"
-            }
-            Self::Meta(MetaCommand::Get { .. }) => {
-                "readonly: mg/inspect may claim stale-item recache ownership; no request sent"
-            }
-            Self::Local(LocalCommand::Recent(_)) => {
-                "readonly: recent changes saved hosts; no request sent"
-            }
-            _ => "readonly: command changes cached items; no request sent",
+            Self::Basic(BasicCommand::FlushAll { .. }) => READONLY_FLUSH,
+            Self::Meta(MetaCommand::Get { .. }) => READONLY_RECACHE,
+            Self::Local(LocalCommand::Recent(_)) => READONLY_RECENT,
+            _ => READONLY_MUTATION,
         })
     }
 }
 
+const READONLY_EXPIRATION: &str = "readonly: command changes expiration; no request sent";
+const READONLY_FLUSH: &str = "readonly: flush_all invalidates cached items; no request sent";
+const READONLY_RECACHE: &str =
+    "readonly: mg/inspect may claim stale-item recache ownership; no request sent";
+const READONLY_RECENT: &str = "readonly: recent changes saved hosts; no request sent";
+const READONLY_MUTATION: &str = "readonly: command changes cached items; no request sent";
+
+fn readonly_error_for_words(words: &[String]) -> Option<&'static str> {
+    let verb = words.first()?.as_str();
+    match verb {
+        "gat" | "gats" | "touch" => Some(READONLY_EXPIRATION),
+        "flush_all" => Some(READONLY_FLUSH),
+        "mg" | "inspect" => Some(READONLY_RECACHE),
+        "recent" if matches!(words.get(1).map(String::as_str), Some("forget" | "clear")) => {
+            Some(READONLY_RECENT)
+        }
+        "set" | "add" | "replace" | "append" | "prepend" | "cas" | "delete" | "incr" | "decr"
+        | "ms" | "md" | "ma" => Some(READONLY_MUTATION),
+        _ => None,
+    }
+}
+
 pub fn parse(line: &str) -> Result<Command, String> {
+    parse_for_session(line, false)
+}
+
+/// Reject universally forbidden verbs before parsing values or options, so an
+/// incomplete mutation in a read-only session reports the mode restriction.
+pub fn parse_for_session(line: &str, readonly: bool) -> Result<Command, String> {
     let words = shell_words::split(line).map_err(|error| format!("invalid quoting: {error}"))?;
+    if readonly {
+        if let Some(error) = readonly_error_for_words(&words) {
+            return Err(error.into());
+        }
+    }
     let Some((verb, args)) = words.split_first() else {
         return Err("enter a command (try help)".into());
     };
@@ -1197,6 +1224,66 @@ mod tests {
             "unknown key",
         ] {
             invalid(form);
+        }
+    }
+    #[test]
+    fn readonly_rejects_incomplete_mutations_before_argument_validation() {
+        for form in [
+            "set test",
+            "cas k",
+            "touch k",
+            "flush_all --delay",
+            "mg",
+            "recent forget",
+            "set k --file /does/not/exist",
+        ] {
+            let error = parse_for_session(form, true).unwrap_err();
+            assert!(error.starts_with("readonly:"), "{form}: {error}");
+        }
+        for form in ["get k", "stats", "help set", "recent", "version"] {
+            assert!(parse_for_session(form, true).is_ok(), "{form}");
+        }
+        assert!(
+            parse_for_session("get", true)
+                .unwrap_err()
+                .starts_with("usage:")
+        );
+        assert!(
+            parse_for_session("unknown k", true)
+                .unwrap_err()
+                .starts_with("unknown command")
+        );
+    }
+
+    #[test]
+    fn readonly_preflight_agrees_with_typed_policy_for_mutations() {
+        for form in [
+            "set k v",
+            "add k v",
+            "replace k v",
+            "append k v",
+            "prepend k v",
+            "cas k v 1",
+            "delete k",
+            "incr k 1",
+            "decr k 1",
+            "touch k 30",
+            "gat 30 k",
+            "gats 30 k",
+            "flush_all",
+            "mg k",
+            "inspect k",
+            "ms k v",
+            "md k",
+            "ma k",
+            "recent forget host:11211",
+            "recent clear",
+        ] {
+            assert_eq!(
+                parse_for_session(form, true).unwrap_err(),
+                parsed(form).readonly_error().unwrap(),
+                "{form}"
+            );
         }
     }
 }
