@@ -72,9 +72,149 @@ fn commands(readonly: bool) -> &'static [&'static str] {
     }
 }
 
+/// Visual-only argument guidance. The returned text is never passed to Reedline's
+/// hint-completion methods, which must insert only real command-name suffixes.
+fn argument_hint(line: &str, readonly: bool) -> Option<&'static str> {
+    let words = shell_words::split(line).ok()?;
+    let verb = words.first()?.as_str();
+    if !commands(readonly).contains(&verb) {
+        return None;
+    }
+    let args = &words[1..];
+    if args.is_empty() && !line.chars().last().is_some_and(char::is_whitespace) {
+        return None;
+    }
+    match verb {
+        "get" | "gets" => Some(if args.is_empty() {
+            "KEY [KEY...]"
+        } else {
+            "[KEY...]"
+        }),
+        "gat" | "gats" => match args.len() {
+            0 => Some("SEC KEY [KEY...]"),
+            1 => Some("KEY [KEY...]"),
+            _ => Some("[KEY...]"),
+        },
+        "set" | "add" | "replace" | "append" | "prepend" | "cas" | "ms" => storage_hint(verb, args),
+        "touch" => match args {
+            [] => Some("KEY TTL"),
+            [_] => Some("TTL"),
+            [_, option] if option == "--ttl" => Some("SEC"),
+            _ => None,
+        },
+        "delete" => args.is_empty().then_some("KEY"),
+        "incr" | "decr" => match args.len() {
+            0 => Some("KEY DELTA"),
+            1 => Some("DELTA"),
+            _ => None,
+        },
+        "inspect" => match args.len() {
+            0 => Some("KEY [value]"),
+            1 => Some("[value]"),
+            _ => None,
+        },
+        "mg" | "md" | "ma" => match args.len() {
+            0 => Some("KEY [FLAGS...]"),
+            1 => Some("[FLAGS...]"),
+            _ => None,
+        },
+        "me" => match args.len() {
+            0 => Some("KEY [b]"),
+            1 => Some("[b]"),
+            _ => None,
+        },
+        "stats" => args.is_empty().then_some("[items|slabs|settings|sizes]"),
+        "help" => args.is_empty().then_some("[COMMAND]"),
+        "flush_all" => match args {
+            [] => Some("[DELAY]"),
+            [option] if option == "--delay" => Some("SEC"),
+            _ => None,
+        },
+        "recent" if readonly => None,
+        "recent" => match args {
+            [] => Some("[forget HOST:PORT [tls]|clear]"),
+            [subcommand] if subcommand == "forget" => Some("HOST:PORT [tls]"),
+            [subcommand, _] if subcommand == "forget" => Some("[tls]"),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn storage_hint(verb: &str, args: &[String]) -> Option<&'static str> {
+    let tail = match verb {
+        "cas" => "CAS_ID [TTL [FLAGS]]",
+        "ms" => "[FLAGS...]",
+        "append" | "prepend" => "",
+        _ => "[TTL [FLAGS]]",
+    };
+    if args.is_empty() {
+        return Some(match verb {
+            "cas" => "KEY VALUE CAS_ID [TTL [FLAGS]]",
+            "ms" => "KEY VALUE [FLAGS...]",
+            "append" | "prepend" => "KEY VALUE",
+            _ => "KEY VALUE [TTL [FLAGS]]",
+        });
+    }
+    if args.len() == 1 {
+        return Some(match verb {
+            "cas" => "VALUE CAS_ID [TTL [FLAGS]]",
+            "ms" => "VALUE [FLAGS...]",
+            "append" | "prepend" => "VALUE",
+            _ => "VALUE [TTL [FLAGS]]",
+        });
+    }
+    let value_end = if matches!(args[1].as_str(), "--base64" | "--file") {
+        if args.len() == 2 {
+            return Some(match (verb, args[1].as_str()) {
+                ("cas", "--base64") => "BASE64 CAS_ID [TTL [FLAGS]]",
+                ("cas", _) => "PATH CAS_ID [TTL [FLAGS]]",
+                ("ms", "--base64") => "BASE64 [FLAGS...]",
+                ("ms", _) => "PATH [FLAGS...]",
+                ("append" | "prepend", "--base64") => "BASE64",
+                ("append" | "prepend", _) => "PATH",
+                (_, "--base64") => "BASE64 [TTL [FLAGS]]",
+                _ => "PATH [TTL [FLAGS]]",
+            });
+        }
+        3
+    } else {
+        if args[1].starts_with("--") {
+            return None;
+        }
+        2
+    };
+    let rest = &args[value_end..];
+    if rest.is_empty() {
+        return (!tail.is_empty()).then_some(tail);
+    }
+    if verb == "ms" || matches!(verb, "append" | "prepend") {
+        return None;
+    }
+    if rest[0].starts_with("--") {
+        return match rest.last().map(String::as_str) {
+            Some("--ttl") => Some("SEC"),
+            Some("--flags") => Some("FLAGS"),
+            Some("--cas") if verb == "cas" => Some("CAS_ID"),
+            _ if verb == "cas" && !rest.iter().any(|part| part == "--cas") => Some("--cas CAS_ID"),
+            _ => None,
+        };
+    }
+    if !rest[0].bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    match (verb, rest.len()) {
+        ("cas", 1) => Some("[TTL [FLAGS]]"),
+        ("cas", 2) if rest[1].bytes().all(|byte| byte.is_ascii_digit()) => Some("[FLAGS]"),
+        (_, 1) => Some("[FLAGS]"),
+        _ => None,
+    }
+}
+
 struct CommandHinter {
     readonly: bool,
     suffix: String,
+    visual_suffix: String,
 }
 
 impl CommandHinter {
@@ -82,6 +222,7 @@ impl CommandHinter {
         Self {
             readonly,
             suffix: String::new(),
+            visual_suffix: String::new(),
         }
     }
 }
@@ -96,9 +237,12 @@ impl Hinter for CommandHinter {
         _cwd: &str,
     ) -> String {
         self.suffix.clear();
-        // Only a partially typed verb at the end of the buffer gets a ghost suffix.
-        if pos == line.len()
-            && !line.is_empty()
+        self.visual_suffix.clear();
+        if pos != line.len() {
+            return String::new();
+        }
+        // Only a partially typed verb is insertable via Tab.
+        if !line.is_empty()
             && !line.chars().any(char::is_whitespace)
             && !commands(self.readonly).contains(&line)
         {
@@ -110,14 +254,19 @@ impl Hinter for CommandHinter {
                 self.suffix.push(' ');
             }
         }
-        if use_ansi_coloring && !self.suffix.is_empty() {
-            Style::new()
-                .dimmed()
-                .fg(Color::LightGray)
-                .paint(&self.suffix)
-                .to_string()
+        self.visual_suffix.push_str(&self.suffix);
+        if self.visual_suffix.is_empty() {
+            if let Some(arguments) = argument_hint(line, self.readonly) {
+                if !line.chars().last().is_some_and(char::is_whitespace) {
+                    self.visual_suffix.push(' ');
+                }
+                self.visual_suffix.push_str(arguments);
+            }
+        }
+        if use_ansi_coloring && !self.visual_suffix.is_empty() {
+            Color::Fixed(245).paint(&self.visual_suffix).to_string()
         } else {
-            self.suffix.clone()
+            self.visual_suffix.clone()
         }
     }
 
@@ -435,17 +584,92 @@ mod tests {
     use reedline::FileBackedHistory;
 
     #[test]
-    fn hint_is_stable_and_only_a_command_suffix() {
+    fn command_hint_remains_insertable_only_for_a_partial_verb() {
         let history = FileBackedHistory::default();
         let mut hinter = CommandHinter::new(false);
         assert_eq!(hinter.handle("g", 1, &history, false, ""), "et ");
         assert_eq!(hinter.complete_hint(), "et ");
         assert_eq!(format!("g{}", hinter.complete_hint()), "get ");
         assert_eq!(hinter.handle("get", 3, &history, false, ""), "");
-        assert_eq!(hinter.handle("get ", 4, &history, false, ""), "");
+        assert_eq!(
+            hinter.handle("get ", 4, &history, false, ""),
+            "KEY [KEY...]"
+        );
         assert_eq!(hinter.complete_hint(), "");
         assert_eq!(hinter.handle("gets", 4, &history, false, ""), "");
         assert_eq!(hinter.handle("g", 0, &history, false, ""), "");
+    }
+
+    #[test]
+    fn argument_hints_track_required_and_optional_tokens() {
+        let history = FileBackedHistory::default();
+        let mut hinter = CommandHinter::new(false);
+        for (input, expected) in [
+            ("get ", "KEY [KEY...]"),
+            ("get something", " [KEY...]"),
+            ("get something ", "[KEY...]"),
+            ("gets ", "KEY [KEY...]"),
+            ("set ", "KEY VALUE [TTL [FLAGS]]"),
+            ("set key ", "VALUE [TTL [FLAGS]]"),
+            ("set key", " VALUE [TTL [FLAGS]]"),
+            ("set key value", " [TTL [FLAGS]]"),
+            ("set key value 30 ", "[FLAGS]"),
+            ("cas key value ", "CAS_ID [TTL [FLAGS]]"),
+            ("set key --file ", "PATH [TTL [FLAGS]]"),
+            ("set key --base64 ", "BASE64 [TTL [FLAGS]]"),
+            ("set key value --ttl ", "SEC"),
+            ("cas key value --cas ", "CAS_ID"),
+            ("cas key value --ttl 30 ", "--cas CAS_ID"),
+            ("cas key value 42 ", "[TTL [FLAGS]]"),
+            ("touch key ", "TTL"),
+            ("append key ", "VALUE"),
+            ("append key value ", ""),
+            ("touch key --ttl ", "SEC"),
+            ("flush_all ", "[DELAY]"),
+            ("flush_all --delay ", "SEC"),
+            ("inspect key ", "[value]"),
+            ("recent forget host:11211 ", "[tls]"),
+        ] {
+            assert_eq!(
+                hinter.handle(input, input.len(), &history, false, ""),
+                expected,
+                "{input}"
+            );
+            assert_eq!(hinter.complete_hint(), "", "{input}");
+            assert_eq!(hinter.next_hint_token(), "", "{input}");
+        }
+        assert_eq!(hinter.handle("get ", 2, &history, false, ""), "");
+        assert_eq!(hinter.handle("bogus ", 6, &history, false, ""), "");
+    }
+
+    #[test]
+    fn argument_ghosts_are_not_accepted_as_tab_completions() {
+        let history = FileBackedHistory::default();
+        let mut hinter = CommandHinter::new(false);
+        assert_eq!(hinter.handle("g", 1, &history, false, ""), "et ");
+        assert_eq!(hinter.complete_hint(), "et ");
+        assert_eq!(hinter.next_hint_token(), "et ");
+        assert_eq!(
+            hinter.handle("get ", 4, &history, false, ""),
+            "KEY [KEY...]"
+        );
+        assert_eq!(hinter.complete_hint(), "");
+        assert_eq!(hinter.next_hint_token(), "");
+        let mut completer = CommandCompleter {
+            readonly: false,
+            known_keys: Arc::default(),
+        };
+        assert!(completer.complete("get ", 4).suggestions().is_empty());
+    }
+
+    #[test]
+    fn argument_ghost_color_is_gray_without_dimming() {
+        let history = FileBackedHistory::default();
+        let mut hinter = CommandHinter::new(false);
+        assert_eq!(
+            hinter.handle("get ", 4, &history, true, ""),
+            Color::Fixed(245).paint("KEY [KEY...]").to_string()
+        );
     }
 
     #[test]
@@ -455,6 +679,12 @@ mod tests {
         assert_eq!(hinter.handle("s", 1, &history, false, ""), "tats ");
         assert_eq!(hinter.handle("set", 3, &history, false, ""), "");
         assert_eq!(hinter.handle("mg", 2, &history, false, ""), "");
+        assert_eq!(hinter.handle("set ", 4, &history, false, ""), "");
+        assert_eq!(hinter.handle("recent forget ", 14, &history, false, ""), "");
+        assert_eq!(
+            hinter.handle("get ", 4, &history, false, ""),
+            "KEY [KEY...]"
+        );
         let mut completer = CommandCompleter {
             readonly: true,
             known_keys: Arc::default(),
