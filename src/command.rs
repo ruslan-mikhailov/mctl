@@ -1008,10 +1008,13 @@ mod tests {
             parsed("set k test --flags 7")
         );
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("value");
+        let path = dir.path().join("value with spaces");
         std::fs::write(&path, b"test").unwrap();
         assert_eq!(
-            parsed(&format!("set k --file={} --flags=7", path.display())),
+            parsed(&format!(
+                "set k --file={} --flags=7",
+                shell_words::quote(&path.to_string_lossy())
+            )),
             parsed("set k test --flags 7")
         );
         invalid("set k v --flags=4294967296");
