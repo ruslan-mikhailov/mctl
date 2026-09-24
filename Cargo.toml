@@ -8,4 +8,5 @@ license = "GPL-3.0-only"
 [dependencies]
 base64 = "0.22"
 libc = "0.2"
+parking_lot = "0.12"
 shell-words = "1.1"
