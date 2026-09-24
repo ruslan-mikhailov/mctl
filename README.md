@@ -14,7 +14,7 @@ This installs the `mctl` executable in Cargo's binary directory (normally `~/.ca
 
 ## Releases
 
-Push a `v<package-version>` tag matching `Cargo.toml` to start a release. After the builds and tests pass, [GitHub Releases](https://github.com/ruslan-mikhailov/mctl/releases) receives Linux (x86-64 and ARM64), macOS (Intel and Apple Silicon), and Windows (x86-64) archives plus SHA-256 checksums. Extract the archive for your platform and put `mctl` (or `mctl.exe`) on your `PATH`.
+Push a `v<package-version>` tag matching `Cargo.toml` to start a release. After the builds and tests pass, [GitHub Releases](https://github.com/ruslan-mikhailov/mctl/releases) receives Linux (x86-64 and ARM64) and macOS (Intel and Apple Silicon) archives plus SHA-256 checksums. Extract the archive for your platform and put `mctl` on your `PATH`.
 
 ## Connect
 

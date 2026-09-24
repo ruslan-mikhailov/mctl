@@ -39,8 +39,6 @@ jobs:
             target: x86_64-apple-darwin
           - os: macos-15
             target: aarch64-apple-darwin
-          - os: windows-2025
-            target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -49,17 +47,8 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Package Unix binary
-        if: runner.os != 'Windows'
         shell: bash
         run: tar -czf mctl-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release mctl -C "$GITHUB_WORKSPACE" LICENSE
-      - name: Package Windows binary
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Path package | Out-Null
-          Copy-Item target/${{ matrix.target }}/release/mctl.exe package/
-          Copy-Item LICENSE package/
-          Compress-Archive -Path package/* -DestinationPath mctl-${{ matrix.target }}.zip
       - uses: actions/upload-artifact@v7
         with:
           name: mctl-${{ matrix.target }}
