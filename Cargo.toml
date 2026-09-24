@@ -1,0 +1,11 @@
+[package]
+name = "mctl"
+version = "0.1.0"
+edition = "2024"
+description = "Interactive Memcached text-protocol shell"
+license = "GPL-3.0-only"
+
+[dependencies]
+base64 = "0.22"
+libc = "0.2"
+shell-words = "1.1"
