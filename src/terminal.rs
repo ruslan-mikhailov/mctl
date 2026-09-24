@@ -130,7 +130,6 @@ fn argument_hint(line: &str, readonly: bool) -> Option<&'static str> {
             [option] if option == "--delay" => Some("SEC"),
             _ => None,
         },
-        "recent" if readonly => None,
         "recent" => match args {
             [] => Some("[forget HOST:PORT [tls]|clear]"),
             [subcommand] if subcommand == "forget" => Some("HOST:PORT [tls]"),
@@ -366,13 +365,10 @@ impl Completer for CommandCompleter {
                 push(candidate, false);
             }
         } else if verb == "recent" {
-            if !self.readonly && index == 1 {
+            if index == 1 {
                 push("forget", true);
                 push("clear", false);
-            } else if !self.readonly
-                && index == 3
-                && before.get(1).is_some_and(|part| part == "forget")
-            {
+            } else if index == 3 && before.get(1).is_some_and(|part| part == "forget") {
                 push("--tls", false);
             }
         } else if ((verb == "get" || verb == "gets") && index >= 1)
@@ -680,7 +676,10 @@ mod tests {
         assert_eq!(hinter.handle("set", 3, &history, false, ""), "");
         assert_eq!(hinter.handle("mg", 2, &history, false, ""), "");
         assert_eq!(hinter.handle("set ", 4, &history, false, ""), "");
-        assert_eq!(hinter.handle("recent forget ", 14, &history, false, ""), "");
+        assert_eq!(
+            hinter.handle("recent forget ", 14, &history, false, ""),
+            "HOST:PORT [tls]"
+        );
         assert_eq!(
             hinter.handle("get ", 4, &history, false, ""),
             "KEY [KEY...]"
@@ -695,7 +694,15 @@ mod tests {
             "set" | "gat" | "flush_all" | "mg" | "inspect"
         )));
         assert!(completer.complete("mg key ", 7).suggestions().is_empty());
-        assert!(completer.complete("recent ", 7).suggestions().is_empty());
+        assert_eq!(
+            completer
+                .complete("recent ", 7)
+                .suggestions()
+                .iter()
+                .map(|suggestion| suggestion.value.as_str())
+                .collect::<Vec<_>>(),
+            ["forget", "clear"]
+        );
     }
 
     #[test]

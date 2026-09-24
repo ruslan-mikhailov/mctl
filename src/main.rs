@@ -281,14 +281,12 @@ impl Session {
                         "text protocol"
                     }
                 );
-                if !self.readonly {
-                    if let Some(recent) = &mut self.recent {
-                        if let Err(error) = recent.record(self.endpoint.clone()) {
-                            eprintln!(
-                                "warning: host will not be remembered: {}",
-                                render::escape(&error.to_string())
-                            );
-                        }
+                if let Some(recent) = &mut self.recent {
+                    if let Err(error) = recent.record(self.endpoint.clone()) {
+                        eprintln!(
+                            "warning: host will not be remembered: {}",
+                            render::escape(&error.to_string())
+                        );
                     }
                 }
                 Some(Wire::with_deadline(
@@ -557,7 +555,7 @@ impl Session {
 
 fn help(verb: Option<&str>, readonly: bool) -> String {
     let suffix = if readonly {
-        "\n[ro] Allowed: get, gets, stats, version, me, mn, help, history, recent (list only), reconnect, quit, exit. mg/inspect can claim stale-item recache ownership; mutations and recent changes are blocked."
+        "\n[ro] Remote commands allowed: get, gets, stats, version, me, mn. mg/inspect can claim stale-item recache ownership; remote mutations are blocked. Local help, history, recent, reconnect, quit, and exit remain available."
     } else {
         ""
     };
@@ -686,12 +684,14 @@ get/gets only retrieve; they do not accept VALUE, TTL, or FLAGS."
         }
         Some("history") => "history: list commands entered during this session.",
         Some("recent") => {
-            "recent: list saved hosts.\nrecent forget HOST:PORT [tls]\nrecent forget HOST:PORT [--tls]\nForget saved entries for that address; tls/--tls restricts removal to TLS entries. recent clear removes all saved hosts. Changes are blocked in readonly mode."
+            "recent: list saved hosts.\nrecent forget HOST:PORT [tls]\nrecent forget HOST:PORT [--tls]\nForget saved entries for that address; tls/--tls restricts removal to TLS entries. recent clear removes all saved hosts. Local recent-host changes are available in readonly mode."
         }
         Some("recent forget") => {
-            "recent forget HOST:PORT [tls]\nrecent forget HOST:PORT [--tls]\nForget saved hosts at this address; tls/--tls limits removal to TLS entries. Blocked in readonly mode."
+            "recent forget HOST:PORT [tls]\nrecent forget HOST:PORT [--tls]\nForget saved hosts at this address; tls/--tls limits removal to TLS entries. Available in readonly mode."
         }
-        Some("recent clear") => "recent clear: remove every saved host. Blocked in readonly mode.",
+        Some("recent clear") => {
+            "recent clear: remove every saved host. Available in readonly mode."
+        }
         Some("reconnect") => "reconnect: reconnect to the current host.",
         Some("quit") => "quit: leave the shell.",
         Some("exit") => "exit: leave the shell.",
@@ -834,7 +834,7 @@ mod tests {
         assert!(flush.contains("interactive confirmation"));
         assert!(flush.contains("batch mode refuses"));
         let readonly = help(None, true);
-        assert!(readonly.contains("recent (list only)"));
+        assert!(readonly.contains("Local help, history, recent"));
         assert!(readonly.contains("mg/inspect"));
     }
 
@@ -870,7 +870,6 @@ mod tests {
             "md k",
             "ma k D2",
             "stats reset",
-            "recent clear",
         ] {
             session.handle(command, None).unwrap();
         }
@@ -894,6 +893,65 @@ mod tests {
                 .unwrap()
                 .address(),
             "cache.example:11211"
+        );
+    }
+    #[test]
+    fn readonly_keeps_local_history_and_persists_recent_host_changes() {
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = Endpoint::parse(&listener.local_addr().unwrap().to_string(), false).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recent.json");
+        let mut session = Session {
+            endpoint: endpoint.clone(),
+            network: None,
+            recent: Some(RecentStore::load(path.clone()).unwrap()),
+            readonly: true,
+            color: false,
+            timeout: Duration::from_secs(1),
+            keys: Arc::new(Mutex::new(Vec::new())),
+            history: Vec::new(),
+            running: Arc::new(AtomicBool::new(false)),
+            cancelled: Arc::new(AtomicBool::new(false)),
+            warning: Arc::new(Mutex::new(None)),
+        };
+        session.connect();
+        assert_eq!(
+            RecentStore::load(path.clone()).unwrap().entries(),
+            &[endpoint.clone()]
+        );
+
+        let forget = format!("recent forget {}", endpoint.address());
+        session.handle(&forget, None).unwrap();
+        assert!(
+            RecentStore::load(path.clone())
+                .unwrap()
+                .entries()
+                .is_empty()
+        );
+        session.recent.as_mut().unwrap().record(endpoint).unwrap();
+        session.handle("recent clear", None).unwrap();
+        assert!(RecentStore::load(path).unwrap().entries().is_empty());
+
+        session.handle("set test", None).unwrap();
+        session.handle("history", None).unwrap();
+        assert_eq!(
+            session.history,
+            [
+                forget,
+                "recent clear".into(),
+                "set test".into(),
+                "history".into()
+            ]
+        );
+        drop(session);
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut request = Vec::new();
+        socket.read_to_end(&mut request).unwrap();
+        assert!(
+            request.is_empty(),
+            "local changes and blocked writes must send no bytes"
         );
     }
 }

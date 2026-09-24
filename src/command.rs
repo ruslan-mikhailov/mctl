@@ -217,7 +217,7 @@ impl Command {
                 BasicCommand::Get { .. } | BasicCommand::Stats(_) | BasicCommand::Version,
             ) => true,
             Self::Meta(MetaCommand::Debug { .. } | MetaCommand::Noop) => true,
-            Self::Local(LocalCommand::Recent(RecentCommand::List)) => true,
+            Self::Local(LocalCommand::Recent(_)) => true,
             Self::Local(
                 LocalCommand::Help(_)
                 | LocalCommand::History
@@ -239,7 +239,6 @@ impl Command {
             }
             Self::Basic(BasicCommand::FlushAll { .. }) => READONLY_FLUSH,
             Self::Meta(MetaCommand::Get { .. }) => READONLY_RECACHE,
-            Self::Local(LocalCommand::Recent(_)) => READONLY_RECENT,
             _ => READONLY_MUTATION,
         })
     }
@@ -249,7 +248,6 @@ const READONLY_EXPIRATION: &str = "readonly: command changes expiration; no requ
 const READONLY_FLUSH: &str = "readonly: flush_all invalidates cached items; no request sent";
 const READONLY_RECACHE: &str =
     "readonly: mg/inspect may claim stale-item recache ownership; no request sent";
-const READONLY_RECENT: &str = "readonly: recent changes saved hosts; no request sent";
 const READONLY_MUTATION: &str = "readonly: command changes cached items; no request sent";
 
 fn readonly_error_for_words(words: &[String]) -> Option<&'static str> {
@@ -258,9 +256,6 @@ fn readonly_error_for_words(words: &[String]) -> Option<&'static str> {
         "gat" | "gats" | "touch" => Some(READONLY_EXPIRATION),
         "flush_all" => Some(READONLY_FLUSH),
         "mg" | "inspect" => Some(READONLY_RECACHE),
-        "recent" if matches!(words.get(1).map(String::as_str), Some("forget" | "clear")) => {
-            Some(READONLY_RECENT)
-        }
         "set" | "add" | "replace" | "append" | "prepend" | "cas" | "delete" | "incr" | "decr"
         | "ms" | "md" | "ma" => Some(READONLY_MUTATION),
         _ => None,
@@ -940,7 +935,6 @@ mod tests {
         ] {
             let command = parsed(positional);
             assert_eq!(command, parsed(named), "{positional}");
-            assert!(!command.is_readonly(), "{positional}");
             if let Command::Basic(basic) = command {
                 let Command::Basic(named) = parsed(named) else {
                     unreachable!()
@@ -1199,18 +1193,14 @@ mod tests {
             "help recent clear",
             "history",
             "recent",
+            "recent forget cache:11211",
+            "recent forget cache:11211 --tls",
+            "recent clear",
             "reconnect",
             "quit",
             "exit",
         ] {
             assert!(parsed(form).is_readonly());
-        }
-        for form in [
-            "recent forget cache:11211",
-            "recent forget cache:11211 --tls",
-            "recent clear",
-        ] {
-            assert!(!parsed(form).is_readonly());
         }
         for form in [
             "recent forget",
@@ -1234,7 +1224,6 @@ mod tests {
             "touch k",
             "flush_all --delay",
             "mg",
-            "recent forget",
             "set k --file /does/not/exist",
         ] {
             let error = parse_for_session(form, true).unwrap_err();
@@ -1276,8 +1265,6 @@ mod tests {
             "ms k v",
             "md k",
             "ma k",
-            "recent forget host:11211",
-            "recent clear",
         ] {
             assert_eq!(
                 parse_for_session(form, true).unwrap_err(),
