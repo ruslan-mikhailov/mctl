@@ -1,4 +1,5 @@
 pub mod command;
+pub mod connection;
 pub mod recent;
 pub mod render;
 pub mod request;
