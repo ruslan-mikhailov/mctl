@@ -4,9 +4,14 @@ version = "0.1.0"
 edition = "2024"
 description = "Interactive Memcached text-protocol shell"
 license = "GPL-3.0-only"
+autobins = false
 
 [dependencies]
 base64 = "0.22"
+directories = "6"
 libc = "0.2"
 parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 shell-words = "1.1"
+tempfile = "3"
