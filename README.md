@@ -4,13 +4,13 @@ An interactive shell for Memcached's text protocol. Run cache commands from a te
 
 ## Install
 
-Install from a checkout with Rust and Cargo:
+Install directly from GitHub with Rust and Cargo:
 
 ```sh
-cargo install --path .
+cargo install --git https://github.com/ruslan-mikhailov/mctl.git
 ```
 
-This installs the `mctl` executable in Cargo's binary directory (normally `~/.cargo/bin`).
+This installs the `mctl` executable in Cargo's binary directory (normally `~/.cargo/bin`). The repository must be reachable over HTTPS by the installer.
 
 ## Connect
 
