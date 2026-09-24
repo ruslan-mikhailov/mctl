@@ -308,41 +308,68 @@ pub fn parse(line: &str) -> Result<Command, String> {
             let mut ttl = 0;
             let mut flags = 0;
             let mut cas = None;
-            let mut seen = HashSet::new();
-            let mut rest = args;
-            while let Some((option, tail)) = rest.split_first() {
-                if !seen.insert(option.as_str()) {
-                    return Err(format!("duplicate option {option}"));
+            if args.first().is_some_and(|arg| arg.starts_with("--")) {
+                let mut seen = HashSet::new();
+                let mut rest = args;
+                while let Some((option, tail)) = rest.split_first() {
+                    if !option.starts_with("--") {
+                        return Err("cannot mix positional numbers with named options".into());
+                    }
+                    if !seen.insert(option.as_str()) {
+                        return Err(format!("duplicate option {option}"));
+                    }
+                    let (number, next) = tail
+                        .split_first()
+                        .ok_or_else(|| format!("{option} requires a number"))?;
+                    match option.as_str() {
+                        "--ttl"
+                            if !matches!(
+                                operation,
+                                StorageOperation::Append | StorageOperation::Prepend
+                            ) =>
+                        {
+                            ttl = relative_ttl(number)?
+                        }
+                        "--flags"
+                            if !matches!(
+                                operation,
+                                StorageOperation::Append | StorageOperation::Prepend
+                            ) =>
+                        {
+                            flags = decimal::<u32>(number, "flags")?
+                        }
+                        "--cas" if operation == StorageOperation::Cas => {
+                            cas = Some(decimal::<u64>(number, "CAS ID")?)
+                        }
+                        _ => return Err(format!("unsupported option {option} for {verb}")),
+                    }
+                    rest = next;
                 }
-                let (number, next) = tail
-                    .split_first()
-                    .ok_or_else(|| format!("{option} requires a number"))?;
-                match option.as_str() {
-                    "--ttl"
-                        if !matches!(
-                            operation,
-                            StorageOperation::Append | StorageOperation::Prepend
-                        ) =>
-                    {
-                        ttl = relative_ttl(number)?
-                    }
-                    "--flags"
-                        if !matches!(
-                            operation,
-                            StorageOperation::Append | StorageOperation::Prepend
-                        ) =>
-                    {
-                        flags = decimal::<u32>(number, "flags")?
-                    }
-                    "--cas" if operation == StorageOperation::Cas => {
-                        cas = Some(decimal::<u64>(number, "CAS ID")?)
-                    }
-                    _ => return Err(format!("unsupported option {option} for {verb}")),
+            } else if !args.is_empty() {
+                if args.iter().any(|arg| arg.starts_with("--")) {
+                    return Err("cannot mix positional numbers with named options".into());
                 }
-                rest = next;
+                let max = match operation {
+                    StorageOperation::Cas => 3,
+                    StorageOperation::Append | StorageOperation::Prepend => 0,
+                    _ => 2,
+                };
+                if args.len() > max {
+                    return Err(format!("too many positional numbers for {verb}"));
+                }
+                let mut numbers = args.iter();
+                if operation == StorageOperation::Cas {
+                    cas = Some(decimal::<u64>(numbers.next().unwrap(), "CAS ID")?);
+                }
+                if let Some(number) = numbers.next() {
+                    ttl = relative_ttl(number)?;
+                }
+                if let Some(number) = numbers.next() {
+                    flags = decimal::<u32>(number, "flags")?;
+                }
             }
             if operation == StorageOperation::Cas && cas.is_none() {
-                return Err("cas requires --cas ID".into());
+                return Err("cas requires CAS_ID or --cas ID".into());
             }
             basic(BasicCommand::Store {
                 operation,
@@ -375,14 +402,20 @@ pub fn parse(line: &str) -> Result<Command, String> {
             })
         }
         "touch" => {
-            exactly(args, 3, "touch KEY --ttl SEC")?;
-            validate_key(&args[0])?;
-            if args[1] != "--ttl" {
-                return Err("usage: touch KEY --ttl SEC".into());
-            }
+            let ttl = match args {
+                [key, ttl] if !ttl.starts_with("--") => {
+                    validate_key(key)?;
+                    relative_ttl(ttl)?
+                }
+                [key, option, ttl] if option == "--ttl" => {
+                    validate_key(key)?;
+                    relative_ttl(ttl)?
+                }
+                _ => return Err("usage: touch KEY TTL | touch KEY --ttl SEC".into()),
+            };
             basic(BasicCommand::Touch {
                 key: args[0].clone(),
-                ttl: relative_ttl(&args[2])?,
+                ttl,
             })
         }
         "stats" => {
@@ -404,14 +437,11 @@ pub fn parse(line: &str) -> Result<Command, String> {
             basic(BasicCommand::Version)
         }
         "flush_all" => {
-            let delay = if args.is_empty() {
-                0
-            } else {
-                exactly(args, 2, "flush_all [--delay SEC]")?;
-                if args[0] != "--delay" {
-                    return Err("usage: flush_all [--delay SEC]".into());
-                }
-                relative_ttl(&args[1])?
+            let delay = match args {
+                [] => 0,
+                [delay] if !delay.starts_with("--") => relative_ttl(delay)?,
+                [option, delay] if option == "--delay" => relative_ttl(delay)?,
+                _ => return Err("usage: flush_all [DELAY | --delay SEC]".into()),
             };
             basic(BasicCommand::FlushAll { delay })
         }
@@ -468,8 +498,11 @@ pub fn parse(line: &str) -> Result<Command, String> {
             meta(MetaCommand::Noop)
         }
         "inspect" => {
-            if args.is_empty() || args.len() > 2 || (args.len() == 2 && args[1] != "--value") {
-                return Err("usage: inspect KEY [--value]".into());
+            if args.is_empty()
+                || args.len() > 2
+                || (args.len() == 2 && args[1] != "--value" && args[1] != "value")
+            {
+                return Err("usage: inspect KEY [value | --value]".into());
             }
             validate_key(&args[0])?;
             let mut flags = vec![
@@ -489,10 +522,23 @@ pub fn parse(line: &str) -> Result<Command, String> {
             })
         }
         "help" => {
-            if args.len() > 1 {
-                return Err("usage: help [command]".into());
-            }
-            local(LocalCommand::Help(args.first().cloned()))
+            let topic = match args {
+                [] => None,
+                [command] => Some(command.clone()),
+                [command, subcommand]
+                    if (command == "stats"
+                        && matches!(
+                            subcommand.as_str(),
+                            "items" | "slabs" | "settings" | "sizes"
+                        ))
+                        || (command == "recent"
+                            && matches!(subcommand.as_str(), "forget" | "clear")) =>
+                {
+                    Some(format!("{command} {subcommand}"))
+                }
+                _ => return Err("usage: help [command]".into()),
+            };
+            local(LocalCommand::Help(topic))
         }
         "history" => {
             exactly(args, 0, "history")?;
@@ -502,7 +548,10 @@ pub fn parse(line: &str) -> Result<Command, String> {
             let subcommand = match args.first().map(String::as_str) {
                 None => RecentCommand::List,
                 Some("clear") if args.len() == 1 => RecentCommand::Clear,
-                Some("forget") if args.len() == 2 || (args.len() == 3 && args[2] == "--tls") => {
+                Some("forget")
+                    if args.len() == 2
+                        || (args.len() == 3 && matches!(args[2].as_str(), "--tls" | "tls")) =>
+                {
                     if args[1].is_empty()
                         || args[1].chars().any(|c| c.is_whitespace() || c.is_control())
                     {
@@ -513,7 +562,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
                         tls: (args.len() == 3).then_some(true),
                     }
                 }
-                _ => return Err("usage: recent [forget HOST:PORT [--tls]|clear]".into()),
+                _ => return Err("usage: recent [forget HOST:PORT [tls | --tls]|clear]".into()),
             };
             local(LocalCommand::Recent(subcommand))
         }
@@ -840,6 +889,92 @@ mod tests {
     }
 
     #[test]
+    fn positional_and_named_forms_encode_identically() {
+        for (positional, named) in [
+            ("set k v 0", "set k v --ttl 0"),
+            ("set k v 30 7", "set k v --ttl 30 --flags 7"),
+            (
+                "add k v 2592000 4294967295",
+                "add k v --ttl 2592000 --flags 4294967295",
+            ),
+            ("replace k v 1 2", "replace k v --flags 2 --ttl 1"),
+            ("cas k v 0", "cas k v --cas 0"),
+            (
+                "cas k v 18446744073709551615 2592000 4294967295",
+                "cas k v --cas 18446744073709551615 --ttl 2592000 --flags 4294967295",
+            ),
+            ("touch k 30", "touch k --ttl 30"),
+            ("flush_all 30", "flush_all --delay 30"),
+            ("inspect k value", "inspect k --value"),
+            (
+                "recent forget cache:11211 tls",
+                "recent forget cache:11211 --tls",
+            ),
+        ] {
+            let command = parsed(positional);
+            assert_eq!(command, parsed(named), "{positional}");
+            assert!(!command.is_readonly(), "{positional}");
+            if let Command::Basic(basic) = command {
+                let Command::Basic(named) = parsed(named) else {
+                    unreachable!()
+                };
+                assert_eq!(
+                    crate::request::basic(&basic).unwrap().bytes,
+                    crate::request::basic(&named).unwrap().bytes,
+                    "{positional}"
+                );
+            }
+        }
+        assert_eq!(parsed("flush_all 0"), parsed("flush_all --delay 0"));
+        assert_eq!(
+            parsed("recent forget cache:11211"),
+            Command::Local(LocalCommand::Recent(RecentCommand::Forget {
+                address: "cache:11211".into(),
+                tls: None,
+            }))
+        );
+        assert!(parsed("get k v 30").is_readonly());
+        assert!(matches!(
+            parsed("gets k v"),
+            Command::Basic(BasicCommand::Get { keys, cas: true }) if keys == ["k", "v"]
+        ));
+    }
+
+    #[test]
+    fn positional_bounds_and_ambiguous_mixtures_reject() {
+        for form in [
+            "set k v 2592001",
+            "set k v -1",
+            "set k v 1 4294967296",
+            "set k v 4294967296",
+            "set k v 1 2 3",
+            "add k v 1 --flags 2",
+            "replace k v --ttl 1 2",
+            "set k v 1 --ttl 2",
+            "set k v --flags 1 2",
+            "set k v --flags 1 --flags 2",
+            "append k v 1",
+            "prepend k v 1 2",
+            "cas k v 18446744073709551616",
+            "cas k v -1",
+            "cas k v 1 2592001",
+            "cas k v 1 2 4294967296",
+            "cas k v 1 2 3 4",
+            "cas k v 1 --ttl 2",
+            "cas k v --cas 1 2",
+            "cas k v --cas 1 --cas 2",
+            "touch k 2592001",
+            "touch k 1 --ttl 2",
+            "flush_all 2592001",
+            "flush_all 1 --delay 2",
+            "inspect k value --value",
+            "recent forget cache:11211 tls --tls",
+        ] {
+            invalid(form);
+        }
+    }
+
+    #[test]
     fn shell_quoting_and_binary_payloads() {
         assert!(
             matches!(parsed(r#"set key "hello world""#), Command::Basic(BasicCommand::Store { value, .. }) if value == b"hello world")
@@ -850,6 +985,15 @@ mod tests {
         assert!(
             matches!(parsed("set key --base64 AP8NCg=="), Command::Basic(BasicCommand::Store { value, .. }) if value == [0, 255, 13, 10])
         );
+        assert_eq!(
+            parsed("set key --base64 AP8NCg== 30 7"),
+            parsed("set key --base64 AP8NCg== --ttl 30 --flags 7")
+        );
+        assert_eq!(
+            parsed("cas key --base64 AP8NCg== 42 30 7"),
+            parsed("cas key --base64 AP8NCg== --cas 42 --ttl 30 --flags 7")
+        );
+        invalid("set key --base64 AP8NCg== 30 --flags 7");
         assert!(
             matches!(parsed("ms key --base64 AA== T60"), Command::Meta(MetaCommand::Set { value, .. }) if value == [0])
         );
@@ -868,6 +1012,13 @@ mod tests {
         assert!(
             matches!(parsed(&input), Command::Meta(MetaCommand::Set { value, .. }) if value == [0, 255, 13, 10])
         );
+        let positional = format!("cas key --file '{}' 42 30 7", path.display());
+        let named = format!(
+            "cas key --file '{}' --cas 42 --ttl 30 --flags 7",
+            path.display()
+        );
+        assert_eq!(parsed(&positional), parsed(&named));
+        invalid(&format!("set key --file '{}' 30 --flags 7", path.display()));
         File::options()
             .write(true)
             .open(&path)
@@ -875,6 +1026,7 @@ mod tests {
             .set_len(MAX_VALUE_BYTES as u64 + 1)
             .unwrap();
         invalid(&input);
+        invalid(&positional);
         std::fs::remove_file(path).unwrap();
     }
 
@@ -1012,6 +1164,12 @@ mod tests {
         for form in [
             "help",
             "help mg",
+            "help stats sizes",
+            "help stats items",
+            "help stats slabs",
+            "help stats settings",
+            "help recent forget",
+            "help recent clear",
             "history",
             "recent",
             "reconnect",
@@ -1030,6 +1188,9 @@ mod tests {
         for form in [
             "recent forget",
             "recent clear extra",
+            "help stats unsupported",
+            "help recent unsupported",
+            "help set extra",
             "recent forget cache:11211 --plain",
             "quit now",
             "touch k --ttl 0 extra",
